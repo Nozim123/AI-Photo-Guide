@@ -1,0 +1,7 @@
+{
+  "name": "LuminaTour: AI Photo Guide",
+  "description": "Snap a photo of any landmark to instantly uncover its secrets through AI vision, search-grounded history, and immersive narrated tours.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
