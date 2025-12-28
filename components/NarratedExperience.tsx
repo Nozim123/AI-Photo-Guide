@@ -5,7 +5,8 @@ import {
   ExternalLink, RefreshCcw, Share2, ThumbsUp, ThumbsDown, 
   Sparkles, ChevronDown, ChevronUp, Twitter, Facebook, Copy,
   Type as TypeIcon, Compass, Gauge, Box, Eye, SkipBack, SkipForward,
-  Info, Target, History as HistoryIcon, BookOpen
+  Info, Target, History as HistoryIcon, BookOpen, Camera, Image as ImageIcon,
+  ArrowRight
 } from 'lucide-react';
 import { LandmarkResult, RelatedLandmark } from '../types';
 import { generateNarration, generateLandmarkImage } from '../services/gemini';
@@ -27,6 +28,8 @@ interface ARFactNode {
   id: string;
   year: string;
   text: string;
+  theme: string;
+  sectionIdx: number;
   x: number;
   y: number;
   z: number;
@@ -34,6 +37,7 @@ interface ARFactNode {
 
 type FontSize = 'small' | 'medium' | 'large';
 type PlaybackSpeed = 0.5 | 0.75 | 1 | 1.25 | 1.5 | 2;
+type ARBgMode = 'live' | 'stylized';
 
 export const NarratedExperience: React.FC<NarratedExperienceProps> = ({ result, onBack, onExploreRelated, onUpdateCache }) => {
   const [isPlaying, setIsPlaying] = useState(false);
@@ -51,11 +55,14 @@ export const NarratedExperience: React.FC<NarratedExperienceProps> = ({ result, 
   const [isARMode, setIsARMode] = useState(() => {
     return localStorage.getItem(`ar_active_${result.id}`) === 'true';
   });
+  const [arBgMode, setArBgMode] = useState<ARBgMode>('live');
   const [selectedARFact, setSelectedARFact] = useState<ARFactNode | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
 
   const sidebarRef = useRef<HTMLDivElement>(null);
+  // Fix: Change ref type to HTMLElement to correctly support <article> elements which are HTMLElements.
+  const sectionRefs = useRef<Record<number, HTMLElement | null>>({});
   const audioContextRef = useRef<AudioContext | null>(null);
   const sourceNodeRef = useRef<AudioBufferSourceNode | null>(null);
   const audioBufferRef = useRef<AudioBuffer | null>(null);
@@ -65,28 +72,62 @@ export const NarratedExperience: React.FC<NarratedExperienceProps> = ({ result, 
   const [duration, setDuration] = useState(0);
   const animationFrameRef = useRef<number>(null);
 
+  const sections: HistorySection[] = React.useMemo(() => {
+    const raw = result.history.split(/##\s+/);
+    const parsed: HistorySection[] = [];
+    
+    if (raw[0].trim()) {
+      const lines = raw[0].trim().split('\n');
+      const introTitle = lines[0].length < 30 ? lines[0] : "Introduction";
+      parsed.push({
+        title: introTitle,
+        content: raw[0].trim()
+      });
+    }
+
+    for (let i = 1; i < raw.length; i++) {
+      const lines = raw[i].split('\n');
+      const title = lines[0].trim();
+      const content = lines.slice(1).join('\n').trim();
+      parsed.push({ title, content });
+    }
+    return parsed;
+  }, [result.history]);
+
   // Extract dates and key sentences for AR nodes
   const arFactNodes: ARFactNode[] = React.useMemo(() => {
     const nodes: ARFactNode[] = [];
     const yearRegex = /\b(1\d{3}|20\d{2})\b/g;
-    const sentences = result.history.split(/[.!?]\s+/);
     
-    sentences.forEach((s, idx) => {
-      const match = s.match(yearRegex);
-      if (match && nodes.length < 5) {
-        nodes.push({
-          id: `fact-${idx}`,
-          year: match[0],
-          text: s.trim().substring(0, 120) + (s.length > 120 ? '...' : ''),
-          // Randomized but stable spatial positioning
-          x: (Math.random() - 0.5) * 60,
-          y: (Math.random() - 0.5) * 40,
-          z: Math.random() * -100 - 50
-        });
-      }
+    sections.forEach((section, sIdx) => {
+      const sentences = section.content.split(/[.!?]\s+/);
+      sentences.forEach((s, idx) => {
+        const match = s.match(yearRegex);
+        if (match && nodes.length < 6) {
+          // Detect a basic "theme" based on keywords
+          let theme = "General History";
+          if (s.toLowerCase().includes('architect') || s.toLowerCase().includes('design')) theme = "Architecture";
+          if (s.toLowerCase().includes('war') || s.toLowerCase().includes('battle') || s.toLowerCase().includes('conflict')) theme = "Conflict";
+          if (s.toLowerCase().includes('rebuild') || s.toLowerCase().includes('modern') || s.toLowerCase().includes('today')) theme = "Modernization";
+          if (s.toLowerCase().includes('king') || s.toLowerCase().includes('queen') || s.toLowerCase().includes('emperor')) theme = "Royal Era";
+
+          nodes.push({
+            id: `fact-${sIdx}-${idx}`,
+            year: match[0],
+            text: s.trim().substring(0, 120) + (s.length > 120 ? '...' : ''),
+            theme: theme,
+            sectionIdx: sIdx,
+            // Randomized but stable spatial positioning
+            // Keep X/Y tighter to avoid elements going off screen too easily
+            x: (Math.random() - 0.5) * 50,
+            y: (Math.random() - 0.5) * 35,
+            z: Math.random() * -120 - 80 // Further back for depth
+          });
+        }
+      });
     });
     return nodes;
-  }, [result.history]);
+  }, [sections]);
 
   // Load existing feedback
   useEffect(() => {
@@ -106,7 +147,6 @@ export const NarratedExperience: React.FC<NarratedExperienceProps> = ({ result, 
     }
   };
 
-  // Toggle AR Mode
   const toggleAR = async () => {
     const newState = !isARMode;
     setIsARMode(newState);
@@ -132,6 +172,23 @@ export const NarratedExperience: React.FC<NarratedExperienceProps> = ({ result, 
     }
   };
 
+  // Function to jump to the relevant section in the Chronicle
+  const jumpToChronicleSection = (idx: number) => {
+    setExpandedSections(prev => ({ ...prev, [idx]: true }));
+    setSelectedARFact(null);
+    
+    // Tiny delay to ensure the section has expanded before scrolling
+    setTimeout(() => {
+      const sectionEl = sectionRefs.current[idx];
+      if (sectionEl && sidebarRef.current) {
+        sidebarRef.current.scrollTo({
+          top: sectionEl.offsetTop - 100,
+          behavior: 'smooth'
+        });
+      }
+    }, 50);
+  };
+
   // Initialize camera if starting in AR mode
   useEffect(() => {
     if (isARMode && !stream) {
@@ -152,28 +209,6 @@ export const NarratedExperience: React.FC<NarratedExperienceProps> = ({ result, 
       }
     };
   }, [stream]);
-
-  const sections: HistorySection[] = React.useMemo(() => {
-    const raw = result.history.split(/##\s+/);
-    const parsed: HistorySection[] = [];
-    
-    if (raw[0].trim()) {
-      const lines = raw[0].trim().split('\n');
-      const introTitle = lines[0].length < 30 ? lines[0] : "Introduction";
-      parsed.push({
-        title: introTitle,
-        content: raw[0].trim()
-      });
-    }
-
-    for (let i = 1; i < raw.length; i++) {
-      const lines = raw[i].split('\n');
-      const title = lines[0].trim();
-      const content = lines.slice(1).join('\n').trim();
-      parsed.push({ title, content });
-    }
-    return parsed;
-  }, [result.history]);
 
   const toggleSection = (idx: number) => {
     setExpandedSections(prev => ({
@@ -388,21 +423,40 @@ export const NarratedExperience: React.FC<NarratedExperienceProps> = ({ result, 
           0%, 100% { opacity: 0.1; }
           50% { opacity: 0.3; }
         }
+        @keyframes dash-scroll {
+          from { stroke-dashoffset: 20; }
+          to { stroke-dashoffset: 0; }
+        }
         .animate-pulse-glow { animation: pulse-glow 2s ease-in-out infinite; }
         .animate-idle-shimmer { animation: idle-shimmer 3s ease-in-out infinite; }
+        .animate-dash-scroll { animation: dash-scroll 1s linear infinite; }
       `}</style>
 
       {/* Visual Component Area */}
       <div className="relative flex-1 h-[40vh] md:h-full bg-zinc-900 group overflow-hidden">
         {isARMode ? (
-          <div className="absolute inset-0 bg-black overflow-hidden">
-            <video 
-              ref={videoRef}
-              autoPlay 
-              playsInline 
-              muted 
-              className="absolute inset-0 w-full h-full object-cover opacity-80"
-            />
+          <div className="absolute inset-0 bg-black overflow-hidden transition-all duration-700">
+            {/* Background Layer: Live or Stylized */}
+            <div className={`absolute inset-0 transition-opacity duration-1000 ${arBgMode === 'stylized' ? 'opacity-40' : 'opacity-100'}`}>
+              <video 
+                ref={videoRef}
+                autoPlay 
+                playsInline 
+                muted 
+                className={`absolute inset-0 w-full h-full object-cover opacity-80 transition-all duration-1000 ${arBgMode === 'stylized' ? 'blur-xl scale-125' : ''}`}
+              />
+            </div>
+            
+            {/* Stylized Backup Image Layer */}
+            {arBgMode === 'stylized' && (
+              <div className="absolute inset-0 transition-all duration-1000 animate-in fade-in">
+                <img 
+                  src={aiImageUrl || result.imageUrl} 
+                  className="absolute inset-0 w-full h-full object-cover blur-2xl opacity-40 scale-110" 
+                  alt=""
+                />
+              </div>
+            )}
             
             {/* AR SPATIAL SCENE */}
             <div 
@@ -411,6 +465,41 @@ export const NarratedExperience: React.FC<NarratedExperienceProps> = ({ result, 
             >
               <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-transparent to-black/40" />
               
+              {/* SVG Layer for Thematic Connections */}
+              <svg className="absolute inset-0 w-full h-full overflow-visible z-10 pointer-events-none">
+                <defs>
+                   <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+                      <feGaussianBlur stdDeviation="4" result="blur" />
+                      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+                   </filter>
+                </defs>
+                {selectedARFact && arFactNodes.map((node) => {
+                  if (node.id === selectedARFact.id || node.theme !== selectedARFact.theme) return null;
+                  
+                  // Simple viewport percentage based line drawing
+                  const x1 = 50 + selectedARFact.x;
+                  const y1 = 50 + selectedARFact.y;
+                  const x2 = 50 + node.x;
+                  const y2 = 50 + node.y;
+
+                  return (
+                    <line 
+                      key={`link-${node.id}`}
+                      x1={`${x1}%`} y1={`${y1}%`} x2={`${x2}%`} y2={`${y2}%`}
+                      stroke="url(#grad)"
+                      strokeWidth="1.5"
+                      strokeDasharray="4 4"
+                      className="animate-dash-scroll"
+                      style={{ 
+                        stroke: '#f59e0b', 
+                        opacity: 0.6,
+                        filter: 'url(#glow)'
+                      }}
+                    />
+                  );
+                })}
+              </svg>
+
               {/* Feature Lock Tracker (Center) */}
               <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-48 h-48 border border-amber-500/20 rounded-full flex items-center justify-center animate-pulse">
                 <div className="absolute inset-0 border-t border-b border-amber-500/40 rounded-full animate-spin duration-[8s]" />
@@ -419,7 +508,7 @@ export const NarratedExperience: React.FC<NarratedExperienceProps> = ({ result, 
                 
                 {/* HUD Label for Locked Landmark */}
                 <div className="absolute top-full mt-4 bg-amber-500/90 text-black px-4 py-1.5 rounded-full font-black text-[10px] uppercase tracking-tighter shadow-2xl animate-in zoom-in-95">
-                  LOCKED: {result.info.name}
+                  ANCHORED: {result.info.name}
                 </div>
               </div>
 
@@ -429,7 +518,9 @@ export const NarratedExperience: React.FC<NarratedExperienceProps> = ({ result, 
 
                 {arFactNodes.map((node) => {
                   const isSelected = selectedARFact?.id === node.id;
+                  const isThematicNeighbor = selectedARFact && node.theme === selectedARFact.theme && !isSelected;
                   const noneSelected = !selectedARFact;
+
                   return (
                     <div 
                       key={node.id}
@@ -444,13 +535,15 @@ export const NarratedExperience: React.FC<NarratedExperienceProps> = ({ result, 
                     >
                       <div className={`relative transition-all duration-300 ${isSelected ? 'scale-110' : 'hover:scale-105'}`}>
                         {/* Connector Line */}
-                        <div className={`w-0.5 h-16 bg-gradient-to-t from-amber-500 to-transparent mx-auto transition-opacity ${isSelected ? 'opacity-100' : 'opacity-40 group-hover/node:opacity-100'}`} />
+                        <div className={`w-0.5 h-16 bg-gradient-to-t from-amber-500 to-transparent mx-auto transition-opacity ${isSelected || isThematicNeighbor ? 'opacity-100' : 'opacity-40 group-hover/node:opacity-100'}`} />
                         
                         {/* Floating Card */}
                         <div className={`p-4 rounded-2xl backdrop-blur-xl border transition-all duration-500 flex flex-col items-center gap-1 shadow-2xl w-40 text-center
                           ${isSelected 
                             ? 'bg-amber-500 border-amber-400 scale-110 shadow-amber-500/30' 
-                            : 'bg-black/60 border-white/20 group-hover/node:border-amber-500/50'}`}
+                            : isThematicNeighbor 
+                              ? 'bg-amber-500/20 border-amber-500/40 animate-pulse' 
+                              : 'bg-black/60 border-white/20 group-hover/node:border-amber-500/50'}`}
                         >
                            <HistoryIcon size={14} className={isSelected ? 'text-black' : 'text-amber-500'} />
                            <span className={`text-[11px] font-black tracking-widest ${isSelected ? 'text-black' : 'text-zinc-100'}`}>
@@ -460,6 +553,9 @@ export const NarratedExperience: React.FC<NarratedExperienceProps> = ({ result, 
                            <p className={`text-[9px] font-medium leading-tight line-clamp-2 ${isSelected ? 'text-black/80' : 'text-zinc-400'}`}>
                              {node.text}
                            </p>
+                           {isThematicNeighbor && (
+                             <div className="absolute -top-2 left-1/2 -translate-x-1/2 px-2 py-0.5 bg-amber-500 text-[8px] font-black uppercase text-black rounded-full">Connected Theme</div>
+                           )}
                         </div>
                         
                         {/* Highlight / Pulse Glow Effects */}
@@ -473,49 +569,80 @@ export const NarratedExperience: React.FC<NarratedExperienceProps> = ({ result, 
                 })}
               </div>
 
-              {/* Live HUD Readouts */}
-              <div className="absolute top-10 left-10 space-y-2 pointer-events-none">
-                 <div className="flex items-center gap-2 text-zinc-500 font-mono text-[10px] tracking-widest bg-black/40 backdrop-blur-md px-3 py-1.5 rounded-lg border border-white/5">
+              {/* AR Interface HUD Controls */}
+              <div className="absolute top-10 left-10 space-y-3 pointer-events-none">
+                 <div className="flex items-center gap-2 text-zinc-500 font-mono text-[10px] tracking-widest bg-black/40 backdrop-blur-md px-3 py-1.5 rounded-lg border border-white/5 pointer-events-auto">
                     <div className="w-1.5 h-1.5 bg-amber-500 rounded-full animate-pulse" />
                     SYSTEM: ANALYSIS_ACTIVE
                  </div>
-                 <div className="flex flex-col gap-1 text-[9px] font-mono text-amber-500/60 pl-3">
-                    <span>X_COORD: {(Math.random() * 100).toFixed(4)}</span>
-                    <span>Y_COORD: {(Math.random() * 100).toFixed(4)}</span>
-                    <span>DEPTH: SPATIAL_LOCK_STABLE</span>
+                 
+                 <div className="flex flex-col gap-2 pointer-events-auto">
+                   <button 
+                     onClick={() => setArBgMode(prev => prev === 'live' ? 'stylized' : 'live')}
+                     className="flex items-center gap-3 px-3 py-2 bg-black/60 backdrop-blur-md border border-white/10 rounded-xl hover:bg-zinc-800 transition-all group/mode"
+                   >
+                     {arBgMode === 'live' ? <ImageIcon size={14} className="text-zinc-400 group-hover/mode:text-amber-500" /> : <Camera size={14} className="text-zinc-400 group-hover/mode:text-amber-500" />}
+                     <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-300">Switch View Mode</span>
+                   </button>
+                   
+                   <div className="flex flex-col gap-1 text-[9px] font-mono text-amber-500/60 pl-3">
+                      <span>X_COORD: {(Math.random() * 100).toFixed(4)}</span>
+                      <span>Y_COORD: {(Math.random() * 100).toFixed(4)}</span>
+                      <span>DEPTH: SPATIAL_LOCK_STABLE</span>
+                   </div>
                  </div>
               </div>
             </div>
 
             {/* Selected Fact Detailed Pop-up */}
             {selectedARFact && (
-              <div className="absolute inset-0 flex items-center justify-center p-8 bg-black/40 backdrop-blur-sm z-50 animate-in fade-in duration-300">
-                 <div className="bg-zinc-900 border border-amber-500/30 rounded-3xl p-8 max-w-md w-full shadow-2xl relative overflow-hidden">
-                    <div className="absolute top-0 left-0 w-full h-1 bg-amber-500 animate-pulse" />
+              <div className="absolute inset-0 flex items-center justify-center p-8 bg-black/60 backdrop-blur-md z-50 animate-in fade-in duration-300">
+                 <div className="bg-zinc-950 border border-amber-500/30 rounded-[2.5rem] p-10 max-w-lg w-full shadow-[0_0_100px_rgba(245,158,11,0.2)] relative overflow-hidden group/modal">
+                    <div className="absolute top-0 left-0 w-full h-1 bg-amber-500 shadow-[0_0_15px_rgba(245,158,11,0.5)] animate-pulse" />
                     <button 
                       onClick={() => setSelectedARFact(null)}
-                      className="absolute top-4 right-4 p-2 text-zinc-500 hover:text-white transition-colors"
+                      className="absolute top-6 right-6 p-3 text-zinc-500 hover:text-white transition-all hover:bg-white/5 rounded-full"
                     >
-                      <X size={20} />
+                      <X size={24} />
                     </button>
-                    <div className="flex items-center gap-3 mb-6">
-                       <div className="w-12 h-12 bg-amber-500 rounded-2xl flex items-center justify-center shadow-lg shadow-amber-500/20">
-                          <BookOpen className="text-black" />
+                    
+                    <div className="flex items-center gap-5 mb-8">
+                       <div className="w-16 h-16 bg-amber-500 rounded-3xl flex items-center justify-center shadow-2xl shadow-amber-500/30 group-hover/modal:scale-110 transition-transform duration-500">
+                          <BookOpen className="text-black w-8 h-8" />
                        </div>
                        <div>
-                          <p className="text-[10px] font-black text-amber-500 uppercase tracking-widest">Historical Date</p>
-                          <h4 className="text-2xl font-serif text-white">The Year {selectedARFact.year}</h4>
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-500 text-[9px] font-black uppercase tracking-widest border border-amber-500/20">
+                              {selectedARFact.theme}
+                            </span>
+                          </div>
+                          <h4 className="text-3xl font-serif text-white tracking-tight">Era of {selectedARFact.year}</h4>
                        </div>
                     </div>
-                    <p className="text-zinc-300 text-sm leading-relaxed italic mb-8 border-l-2 border-amber-500/30 pl-4">
-                       {selectedARFact.text}
-                    </p>
-                    <button 
-                      onClick={() => setSelectedARFact(null)}
-                      className="w-full py-3 bg-amber-500 text-black font-black uppercase text-xs tracking-widest rounded-xl hover:bg-amber-400 transition-colors"
-                    >
-                      Resume Scan
-                    </button>
+                    
+                    <div className="relative mb-10">
+                      <p className="text-zinc-200 text-lg leading-relaxed italic border-l-4 border-amber-500/50 pl-6 py-2">
+                         {selectedARFact.text}
+                      </p>
+                    </div>
+
+                    <div className="flex gap-4">
+                      <button 
+                        onClick={() => jumpToChronicleSection(selectedARFact.sectionIdx)}
+                        className="flex-1 py-4 bg-amber-500 text-black font-black uppercase text-[10px] tracking-[0.2em] rounded-2xl hover:bg-amber-400 transition-all flex items-center justify-center gap-3 shadow-xl active:scale-95"
+                      >
+                        <Compass size={18} /> View in Chronicle
+                      </button>
+                      <button 
+                        onClick={() => setSelectedARFact(null)}
+                        className="px-6 py-4 bg-white/5 border border-white/10 text-white font-black uppercase text-[10px] tracking-[0.2em] rounded-2xl hover:bg-white/10 transition-all active:scale-95"
+                      >
+                        Back
+                      </button>
+                    </div>
+                    
+                    {/* Visual flourish for the modal */}
+                    <div className="absolute -bottom-12 -right-12 w-48 h-48 bg-amber-500/5 rounded-full blur-[60px]" />
                  </div>
               </div>
             )}
@@ -648,7 +775,12 @@ export const NarratedExperience: React.FC<NarratedExperienceProps> = ({ result, 
 
           <div className="space-y-4">
             {sections.map((section, idx) => (
-              <article key={idx} className="border border-white/5 rounded-xl overflow-hidden bg-white/[0.02]">
+              <article 
+                key={idx} 
+                // Fix: Explicitly return void from the ref callback to avoid implicit return of the element, which React refs do not allow.
+                ref={el => { sectionRefs.current[idx] = el; }}
+                className={`border border-white/5 rounded-xl overflow-hidden transition-all duration-500 ${expandedSections[idx] ? 'bg-white/[0.04] ring-1 ring-amber-500/20' : 'bg-white/[0.02]'}`}
+              >
                 <button 
                   onClick={() => toggleSection(idx)}
                   className="w-full flex items-center justify-between p-4 text-left hover:bg-white/5 transition-colors focus:outline-none focus:bg-white/5"
