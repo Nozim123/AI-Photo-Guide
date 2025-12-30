@@ -42,6 +42,32 @@ export async function identifyLandmark(base64Image: string) {
 }
 
 /**
+ * Identify a landmark by name using text-only prompt
+ */
+export async function searchLandmarkByName(name: string) {
+  const response = await ai.models.generateContent({
+    model: 'gemini-3-flash-preview',
+    contents: `Find information about the landmark "${name}". Provide the result in JSON format with 'name', 'description', 'location', and approximate GPS 'latitude' and 'longitude' if known.`,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          name: { type: Type.STRING },
+          description: { type: Type.STRING },
+          location: { type: Type.STRING },
+          latitude: { type: Type.NUMBER },
+          longitude: { type: Type.NUMBER },
+        },
+        required: ["name", "description"]
+      }
+    }
+  });
+
+  return JSON.parse(response.text);
+}
+
+/**
  * Fetch detailed history using Search Grounding with gemini-3-flash-preview
  */
 export async function getLandmarkHistory(landmarkName: string) {
@@ -97,15 +123,18 @@ export async function getRelatedLandmarks(landmarkName: string, location: string
 }
 
 /**
- * Generate an AI reimagining of the landmark
+ * Generate an AI reimagining of the landmark.
+ * Supports 'cinematic' (default) or 'abstract' styles.
  */
-export async function generateLandmarkImage(landmarkName: string): Promise<string> {
+export async function generateLandmarkImage(landmarkName: string, style: 'cinematic' | 'abstract' = 'cinematic'): Promise<string> {
+  const prompt = style === 'abstract' 
+    ? `An abstract, artistic, and stylized digital painting of ${landmarkName}. Use vibrant neon colors, geometric patterns, and dreamlike atmosphere. High-end museum art style, 8k, majestic.`
+    : `A cinematic, highly detailed wide-angle architectural photograph of ${landmarkName} during the golden hour. Professional lighting, 8k resolution, majestic atmosphere.`;
+
   const response = await ai.models.generateContent({
     model: 'gemini-2.5-flash-image',
     contents: {
-      parts: [
-        { text: `A cinematic, highly detailed wide-angle architectural photograph of ${landmarkName} during the golden hour. Professional lighting, 8k resolution, majestic atmosphere.` },
-      ],
+      parts: [{ text: prompt }],
     },
     config: {
       imageConfig: {

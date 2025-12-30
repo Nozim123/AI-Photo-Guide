@@ -26,6 +26,8 @@ export interface LandmarkResult {
   timestamp: number;
   relatedLandmarks?: RelatedLandmark[];
   audioBase64?: string; // For offline narration playback
+  isBookmarked?: boolean;
+  isDownloaded?: boolean;
 }
 
 export enum AppState {
@@ -36,5 +38,6 @@ export enum AppState {
   RESULT = 'RESULT',
   ERROR = 'ERROR',
   HISTORY = 'HISTORY',
-  MAP = 'MAP'
+  MAP = 'MAP',
+  BOOKMARKS = 'BOOKMARKS'
 }
